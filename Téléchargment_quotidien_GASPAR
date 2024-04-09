@@ -1,0 +1,97 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Fri Feb  2 02:57:16 2024
+
+@author: mateo
+"""
+
+import requests
+from bs4 import BeautifulSoup
+import pandas as pd
+import zipfile
+import os
+import re
+import glob
+
+# Création d'une fonction pour obtenir le chemin du fichier le plus récent
+def get_latest_file(path, pattern):
+    list_of_files = glob.glob(os.path.join(path, pattern)) 
+    if not list_of_files:
+        return None
+    return max(list_of_files, key=os.path.getmtime)
+
+# Liste des fichiers à traiter
+files_to_process = [
+    'risq_gaspar.csv', 'azi_gaspar.csv', 'catnat_gaspar.csv', 
+    'dicrim_gaspar.csv', 'tim_gaspar.csv', 
+    'pprn_gaspar.csv', 'pprt_gaspar.csv', 'pprm_gaspar.csv'
+]
+
+# Emplacement de sauvegarde des fichiers
+data_folder_path = '~/Desktop/Fac Strasbourg/GitHub/Projet_Pelletier/Donnees_GASPAR/'
+data_folder_path = os.path.expanduser(data_folder_path)
+
+# Chemin du fichier où la date de dernière mise à jour est enregistrée
+last_update_file = os.path.join(data_folder_path, 'last_update.txt')
+
+# Récupération de la date de mise à jour actuelle
+response = requests.get('https://www.data.gouv.fr/fr/datasets/base-nationale-de-gestion-assistee-des-procedures-administratives-relatives-aux-risques-gaspar/')
+soup = BeautifulSoup(response.text, 'html.parser')
+update_info = soup.find('p', class_='fr-text--xs fr-m-0 dash-after').text
+current_date_str = re.search(r'Mis à jour le (.+)', update_info).group(1)
+
+# Vérification si une mise à jour est nécessaire
+if os.path.exists(last_update_file):
+    with open(last_update_file, 'r') as file:
+        last_update = file.read().strip()
+else:
+    last_update = ''
+
+if last_update != current_date_str:
+    # URL et téléchargement du fichier zip
+    url = 'https://www.data.gouv.fr/fr/datasets/r/d6fb9e18-b66b-499c-8284-46a3595579cc'
+    response = requests.get(url)
+    zip_content = response.content
+    zip_path = os.path.join(data_folder_path, 'gaspar.zip')
+    
+    # Sauvegarde et extraction du fichier zip
+    with open(zip_path, 'wb') as file:
+        file.write(zip_content)
+    
+    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+        zip_ref.extractall(data_folder_path)
+    
+    # Traitement de chaque fichier
+    for file_name in files_to_process:
+        latest_file = get_latest_file(data_folder_path, file_name.replace('.csv', '_*.csv'))
+        new_data_path = os.path.join(data_folder_path, file_name)
+        
+        try:
+            new_data = pd.read_csv(new_data_path, sep=';')
+        except pd.errors.ParserError as e:
+            print(f"Erreur lors de la lecture du fichier {file_name}: {e}")
+            continue
+
+        if latest_file:
+            try:
+                existing_data = pd.read_csv(latest_file, sep=';')
+            except pd.errors.ParserError as e:
+                print(f"Erreur lors de la lecture du fichier {latest_file}: {e}")
+                continue
+
+            # Fusion des données si existing_data n'est pas vide
+            combined_data = pd.merge(existing_data, new_data, how='outer', indicator=True).query('_merge == "right_only"').drop('_merge', axis=1)
+            combined_data = pd.concat([existing_data, combined_data])
+        else:
+            # Si latest_file est vide, utiliser new_data directement
+            combined_data = new_data
+
+        updated_file_path = os.path.join(data_folder_path, f'{file_name.split(".")[0]}_{current_date_str}.csv')
+        combined_data.to_csv(updated_file_path, index=False, sep=';')
+    
+    # Enregistrement de la nouvelle date de mise à jour
+    with open(last_update_file, 'w') as file:
+        file.write(current_date_str)
+else:
+    print("Aucune mise à jour nécessaire.")
